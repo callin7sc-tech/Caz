@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 BP = 'addon-source/Goblin_Caravan_BP/'
 RP = 'addon-source/Goblin_Caravan_RP/'
-VERSION = [1, 2, 3]
+VERSION = [1, 2, 4]
 FACES = ['north', 'south', 'east', 'west', 'up', 'down']
 BONES = []
 
@@ -493,7 +493,7 @@ def build():
     for prefix in [BP,RP]:
         manifest = json.loads(entries[prefix+'manifest.json'])
         manifest['header']['version'] = VERSION
-        manifest['header']['description'] = 'Goblin Caravan 1.2.3 — Colosso Robot viola, laser rosso dal petto e pestata'
+        manifest['header']['description'] = 'Goblin Caravan 1.2.4 — Colosso Robot viola, laser rosso dal petto e pestata'
         for m in manifest['modules']: m['version'] = VERSION
         for dep in manifest.get('dependencies',[]):
             if 'uuid' in dep: dep['version'] = VERSION
@@ -503,10 +503,21 @@ def build():
         text = '\n'.join(l for l in entries[p].decode().splitlines() if 'gc:robot_colossus' not in l)+'\n'
         entries[p] = (text+f'entity.gc:robot_colossus.name={name}\nitem.spawn_egg.entity.gc:robot_colossus.name={name}\n').encode()
     notes = entries['LEGGIMI.txt'].decode().split('\nCOLOSSO ROBOT — ')[0]
-    for previous in ['1.1.0', '1.2.0', '1.2.1', '1.2.2']:
-        notes = notes.replace('GOBLIN CARAVAN — '+previous, 'GOBLIN CARAVAN — 1.2.3')
-    notes += '''\nCOLOSSO ROBOT — 1.2.3
-NOVITÀ 1.2.3 — LASER ROSSO DAL PETTO
+    for previous in ['1.1.0', '1.2.0', '1.2.1', '1.2.2', '1.2.3']:
+        notes = notes.replace('GOBLIN CARAVAN — '+previous, 'GOBLIN CARAVAN — 1.2.4')
+    notes += '''\nCOLOSSO ROBOT — 1.2.4
+NOVITÀ 1.2.4 — LASER ANCHE IN ALTO (PETTO / TESTA DEL ROBOT)
+Corretto: se il player stava in alto (su un pilastro, un albero o un tetto
+all'altezza del petto o della testa del colosso) il robot non sparava il laser.
+Cause: la vista controllava solo gli occhi del bersaglio (nascosti dal bordo del
+blocco su cui sta in piedi); un blocco toccato dal petto veniva preso per un muro;
+la vista partiva dal lato del robot rivolto altrove; il raggio entità del motore
+può mancare un bersaglio molto vicino e ripido. Ora il robot controlla occhi, busto
+e gambe, ignora i blocchi a contatto col petto (1,25 blocchi), guarda dal petto già
+girato verso il bersaglio e interseca anche direttamente il riquadro del bersaglio.
+I muri veri continuano a proteggere. Il laser ROSSO parte sempre dal petto.
+
+STORICO 1.2.3 — LASER ROSSO DAL PETTO
 Il colosso ora ATTACCA davvero mostri, goblin (gigante e arciere) e player in
 Sopravvivenza/Avventura. Il laser è ROSSO, parte dal reattore sul petto (non più
 dagli occhi), dà fuoco al bersaglio per 10 secondi e infligge 200 danni: uccide
@@ -566,11 +577,11 @@ importazione su Bedrock 1.21.90+, orientamento laser a tutte le rotazioni, pesta
 pareti, salvataggio/ricaricamento e più colossi. Il multiplayer può mostrare ritardo
 visivo di rete; le collisioni sono server-side. Suoni vanilla, particelle originali.
 INSTALLAZIONE AGGIORNAMENTO
-Importa Goblin-Caravan.mcaddon 1.2.3 e attiva ENTRAMBI i pacchetti BP e RP
+Importa Goblin-Caravan.mcaddon 1.2.4 e attiva ENTRAMBI i pacchetti BP e RP
 nel mondo. Esci e riapri il mondo dopo avere aggiornato; gli UUID sono invariati
 per sostituire la vecchia versione. Non servono esperimenti o Beta APIs.
 In Creativa il colosso NON attacca il giocatore: genera uno zombie per provarlo.
-Se mancano animazioni controlla che il Resource Pack 1.2.3 sia attivo; se non
+Se mancano animazioni controlla che il Resource Pack 1.2.4 sia attivo; se non
 attacca controlla Behavior Pack, Content Log e versione Bedrock 1.21.90+.
 Per provare usa una zona aperta (almeno 12×12 e 10 blocchi di altezza) e difficoltà
 Normale; genera zombie e goblin, poi passa in Sopravvivenza. Backup del mondo.
@@ -578,9 +589,9 @@ Controlla idle (reattore e avambracci), camminata per più di 10 blocchi, arrest
 caduta, danno, laser a distanza, pestata da vicino, poi salvataggio/ricaricamento.
 Per isolare caricamento RP da condizioni/controller, con trucchi abilitati:
 /playanimation @e[type=gc:robot_colossus,c=1] animation.gc.colossus.stomp
-Se neppure questo muove la gamba, verifica RP 1.2.3, pacchetti duplicati/priorità
+Se neppure questo muove la gamba, verifica RP 1.2.4, pacchetti duplicati/priorità
 ed errori nel Content Log. Se il comando funziona ma il combattimento no, verifica
-BP 1.2.3 e gli errori script. Nessun blocco specifico riprodotto nel motore grafico:
+BP 1.2.4 e gli errori script. Nessun blocco specifico riprodotto nel motore grafico:
 questo aggiornamento è verificato con test automatici, non dentro Minecraft.
 '''
     entries['LEGGIMI.txt'] = entries['addon-source/LEGGIMI.txt'] = notes.encode()
@@ -590,7 +601,7 @@ questo aggiornamento è verificato con test automatici, non dentro Minecraft.
     addon['LEGGIMI.txt'] = notes.encode()
     path.write_bytes(archive(entries))
     (ROOT/'Goblin-Caravan.mcaddon').write_bytes(archive(addon))
-    print(f'Built 1.2.3: {len(BONES)} bones, {sum(len(b["cubes"]) for b in BONES)} cubes, 7 animations, 256px atlas')
+    print(f'Built 1.2.4: {len(BONES)} bones, {sum(len(b["cubes"]) for b in BONES)} cubes, 7 animations, 256px atlas')
 
 
 if __name__ == '__main__':

@@ -302,3 +302,77 @@ test('suspension while turning cannot resume a stale attack', async () => {
   assert.equal(f.target.damage.length,0);
   assert.equal(f.robot.events.at(-1),'gc:colossus_resume');
 });
+
+// ---- Regression: targets at the robot's chest / head height ----
+// Voxel DDA ray against a set of solid blocks, like Dimension.getBlockFromRay.
+function voxelWorld(solid) {
+  const key = (x,y,z) => x+','+y+','+z;
+  const set = new Set(solid.map(b => key(...b)));
+  return function getBlockFromRay(o, d, options) {
+    let x=Math.floor(o.x), y=Math.floor(o.y), z=Math.floor(o.z);
+    const step={x:Math.sign(d.x),y:Math.sign(d.y),z:Math.sign(d.z)};
+    const next=(p,v,c)=>v>0?(c+1-p)/v:v<0?(c-p)/v:Infinity;
+    let tx=next(o.x,d.x,x), ty=next(o.y,d.y,y), tz=next(o.z,d.z,z);
+    const dx=Math.abs(1/d.x), dy=Math.abs(1/d.y), dz=Math.abs(1/d.z);
+    let t=0;
+    while (t <= options.maxDistance) {
+      if (set.has(key(x,y,z))) {
+        const p={x:o.x+d.x*t,y:o.y+d.y*t,z:o.z+d.z*t};
+        return {block:{location:{x,y,z}},faceLocation:{x:p.x-x,y:p.y-y,z:p.z-z}};
+      }
+      if (tx<=ty && tx<=tz) { t=tx; tx+=dx; x+=step.x; }
+      else if (ty<=tz) { t=ty; ty+=dy; y+=step.y; }
+      else { t=tz; tz+=dz; z+=step.z; }
+    }
+  };
+}
+function tower(x0,x1,z0,z1,top) {
+  const blocks=[];
+  for (let x=x0;x<=x1;x++) for (let z=z0;z<=z1;z++) for (let y=0;y<top;y++) blocks.push([x,y,z]);
+  return blocks;
+}
+async function highFixture(height, dist) {
+  const f=await fixture();
+  // Player standing on the edge of a pillar in front of the robot.
+  f.dimension.getBlockFromRay=voxelWorld(tower(-2,1,dist,dist+3,height));
+  f.target.typeId='minecraft:player'; f.target.location={x:0.5,y:height,z:dist+0.3};
+  f.dimension.rayHits=[]; // engine entity ray misses: box fallback must still hit.
+  return f;
+}
+for (const [label,height,dist] of [['chest',6,4],['head',8,4],['chest close',6,3],['head close',8,3],['above head',10,6]]) {
+  test(`laser fires and kills a player at robot ${label} height`, async () => {
+    const f=await highFixture(height,dist);
+    for (let t=0;t<=80;t+=2) f.tick(t);
+    assert.equal(f.target.damage.length,1,`${label}: damage`);
+    assert.equal(f.target.damage[0].amount,200);
+    assert.equal(f.target.burning,10);
+    const beam=f.particles.filter(p=>p.name==='gc:colossus_laser');
+    assert.ok(beam.length>=2,'red beam drawn');
+    assert.ok(Math.abs(beam[0].position.y-96/16)<1e-9,'beam starts at the chest');
+    assert.ok(beam.at(-1).position.y>=height-0.01,'beam reaches the raised target');
+  });
+}
+test('robot facing away still acquires a raised target behind it', async () => {
+  const f=await highFixture(6,4); f.robot.rotation={x:0,y:180};
+  for (let t=0;t<=120;t+=2) f.tick(t);
+  assert.ok(f.target.damage.length>=1);
+});
+test('a target fully behind a wall is still protected', async () => {
+  const f=await fixture();
+  f.dimension.getBlockFromRay=voxelWorld(tower(-3,3,5,5,12));
+  f.target.location={x:0.5,y:6,z:8.5};
+  for (let t=0;t<=80;t+=2) f.tick(t);
+  assert.equal(f.target.damage.length,0);
+});
+test('ray starting inside a touching block is not a wall', async () => {
+  const f=await fixture();
+  f.dimension.getBlockFromRay=voxelWorld([[0,5,1]]); // block around the chest reactor
+  assert.equal(f.api.wallDistance(f.dimension,{x:0.5,y:5.5,z:1.4},{x:0,y:0,z:1},20,f.api.NEAR_ZONE),20);
+  assert.ok(f.api.wallDistance(f.dimension,{x:0.5,y:5.5,z:1.4},{x:0,y:0,z:1},20,0)<0.01);
+});
+test('ray-box fallback hits only along the beam', async () => {
+  const f=await fixture(); f.target.location={x:0,y:6,z:4};
+  const d=f.api.rayBoxDistance({x:0,y:6.5,z:1.4},{x:0,y:0,z:1},f.target,20);
+  assert.ok(Math.abs(d-(4-0.45-1.4))<1e-9);
+  assert.equal(f.api.rayBoxDistance({x:5,y:6.5,z:1.4},{x:0,y:0,z:1},f.target,20),undefined);
+});

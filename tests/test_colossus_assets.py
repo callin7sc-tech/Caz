@@ -194,11 +194,11 @@ class Assets(unittest.TestCase):
         b=json.loads(self.z.read(BP+'manifest.json')); r=json.loads(self.z.read(RP+'manifest.json'))
         ids=[]
         for m in [b,r]:
-            self.assertEqual(m['header']['version'],[1,2,3]); ids.append(m['header']['uuid'])
+            self.assertEqual(m['header']['version'],[1,2,4]); ids.append(m['header']['uuid'])
             for mod in m['modules']:
-                ids.append(mod['uuid']); self.assertEqual(mod['version'],[1,2,3])
+                ids.append(mod['uuid']); self.assertEqual(mod['version'],[1,2,4])
         self.assertEqual(len(ids),len(set(ids)))
-        self.assertIn({'uuid':r['header']['uuid'],'version':[1,2,3]},b['dependencies'])
+        self.assertIn({'uuid':r['header']['uuid'],'version':[1,2,4]},b['dependencies'])
         self.assertIn({'module_name':'@minecraft/server','version':'2.0.0'},b['dependencies'])
         self.assertEqual(self.z.read(BP+'scripts/colossus.js'),(ROOT/'minecraft/colossus.js').read_bytes())
         self.assertEqual(self.z.read(BP+'scripts/main.js').count(b"import './colossus.js';"),1)

@@ -15,6 +15,7 @@ const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z });
 const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y, z: a.z + b.z });
 const scale = (v, n) => ({ x: v.x * n, y: v.y * n, z: v.z * n });
 const length = v => Math.hypot(v.x, v.y, v.z);
+const dot = (a, b) => a.x * b.x + a.y * b.y + a.z * b.z;
 const unit = v => scale(v, 1 / Math.max(length(v), 0.0001));
 const radians = n => n * Math.PI / 180;
 const wrapAngle = n => ((n + 180) % 360 + 360) % 360 - 180;
@@ -50,25 +51,78 @@ function targetPoint(entity) {
   const head = entity.getHeadLocation();
   return { x: head.x, y: Math.max(entity.location.y + 0.2, head.y - 0.2), z: head.z };
 }
-function wallDistance(dimension, origin, direction, maxDistance, skipNear = false) {
-  const hit = dimension.getBlockFromRay(origin, direction, {
-    maxDistance, includeLiquidBlocks: false, includePassableBlocks: false,
-  });
-  if (!hit) return maxDistance;
-  const distance = length(sub(add(hit.block.location, hit.faceLocation), origin));
-  // A ray that STARTS inside a leaf/ceiling block touching the robot's chest
-  // used to report a wall at ~0 blocks: the robot then never saw anybody.
-  if (skipNear && distance < 0.6) {
-    const skip = 0.75;
-    if (maxDistance <= skip) return maxDistance;
-    return skip + wallDistance(dimension, add(origin, scale(direction, skip)), direction, maxDistance - skip, true);
-  }
-  return distance;
+// Eyes, chest and legs. A target standing on a tower/ledge at the robot's chest
+// or head height often hides its eyes behind the block edge it stands on, while
+// its body is still in plain sight: with only the eyes the laser never fired.
+export function targetPoints(entity) {
+  const eyes = targetPoint(entity);
+  const feet = entity.location;
+  const height = Math.max(0.4, eyes.y - feet.y);
+  return [eyes, { x: feet.x, y: feet.y + height * 0.55, z: feet.z }, { x: feet.x, y: feet.y + 0.3, z: feet.z }];
 }
-export function visible(dimension, origin, point, skipNear = false) {
+// Blocks this close to the chest reactor are touching the robot's body (leaves,
+// ceilings, the very tower a player climbed next to it): the beam passes them.
+export const NEAR_ZONE = 1.25;
+function exitDistance(block, start, direction) {
+  // Distance along the ray at which it leaves the unit cube of `block`.
+  let exit = Infinity;
+  for (const axis of ['x', 'y', 'z']) {
+    const d = direction[axis];
+    if (Math.abs(d) < 1e-9) continue;
+    exit = Math.min(exit, ((d > 0 ? block[axis] + 1 : block[axis]) - start[axis]) / d);
+  }
+  return Number.isFinite(exit) ? Math.max(0, exit) : 0;
+}
+export function wallDistance(dimension, origin, direction, maxDistance, nearZone = 0) {
+  let travelled = 0;
+  for (let step = 0; step < 8 && travelled < maxDistance; step++) {
+    const start = add(origin, scale(direction, travelled));
+    let hit;
+    try {
+      hit = dimension.getBlockFromRay(start, direction, {
+        maxDistance: maxDistance - travelled, includeLiquidBlocks: false, includePassableBlocks: false,
+      });
+    } catch (error) { warn(error); return maxDistance; } // Unloaded chunk: do not blind the robot.
+    if (!hit) return maxDistance;
+    // Signed distance ALONG the ray: a face behind the start (ray starting inside
+    // a block) is 0, not a positive "wall" in front of the chest.
+    const along = Math.max(0, dot(sub(add(hit.block.location, hit.faceLocation), start), direction));
+    if (travelled + along >= nearZone) return Math.min(maxDistance, travelled + along);
+    // Touching block: jump to where the ray leaves it and keep looking.
+    travelled += Math.max(along, exitDistance(hit.block.location, start, direction)) + 0.01;
+  }
+  return maxDistance;
+}
+export function visible(dimension, origin, point, nearZone = 0) {
   const delta = sub(point, origin);
   const distance = length(delta);
-  return distance < 0.1 || wallDistance(dimension, origin, unit(delta), distance, skipNear) >= distance - 0.05;
+  return distance < 0.1 || wallDistance(dimension, origin, unit(delta), distance, nearZone) >= distance - 0.05;
+}
+// First point of the target the chest reactor can see, or undefined.
+export function visiblePoint(dimension, origin, entity) {
+  return targetPoints(entity).find(p => visible(dimension, origin, p, NEAR_ZONE));
+}
+// Ray vs the entity's box. Used when the engine ray query misses/throws, e.g. a
+// steep shot at a player standing right next to the robot's chest or head.
+export function rayBoxDistance(origin, direction, entity, maxDistance) {
+  const feet = entity.location;
+  const top = Math.max(feet.y + 0.5, entity.getHeadLocation().y + 0.25);
+  const half = entity.typeId === 'minecraft:player' ? 0.3 : 0.45;
+  const min = { x: feet.x - half, y: feet.y, z: feet.z - half };
+  const max = { x: feet.x + half, y: top, z: feet.z + half };
+  let near = 0, far = maxDistance;
+  for (const axis of ['x', 'y', 'z']) {
+    const d = direction[axis], o = origin[axis];
+    if (Math.abs(d) < 1e-9) {
+      if (o < min[axis] || o > max[axis]) return undefined;
+      continue;
+    }
+    let t1 = (min[axis] - o) / d, t2 = (max[axis] - o) / d;
+    if (t1 > t2) [t1, t2] = [t2, t1];
+    near = Math.max(near, t1); far = Math.min(far, t2);
+    if (near > far) return undefined;
+  }
+  return near;
 }
 function sound(robot, name, pitch = 1) {
   try { robot.dimension.playSound(name, robot.location, { volume: 1.5, pitch }); }
@@ -84,8 +138,14 @@ export function chestOrigin(robot, yaw) {
   // Front face of the reactor bone in robot_colossus.geo.json: y=96, z=-21 (16 units/block).
   return add(robot.location, add(scale(forward, 21 / 16 + 0.1), { x: 0, y: 96 / 16, z: 0 }));
 }
-function sightOrigin(robot) {
-  return chestOrigin(robot, wrapAngle(robot.getRotation().y));
+function yawTowards(robot, entity) {
+  const d = sub(entity.location, robot.location);
+  return Math.atan2(-d.x, d.z) * 180 / Math.PI;
+}
+// The robot turns to face its victim before firing: look from where the chest
+// WILL be, not from the back of the robot when it happens to face away.
+function sightOrigin(robot, entity) {
+  return chestOrigin(robot, yawTowards(robot, entity));
 }
 function ignite(dimension, position) {
   // Small fire where the beam lands: only in an empty block that has ground below.
@@ -96,9 +156,11 @@ function ignite(dimension, position) {
   } catch (error) { warn(error); }
 }
 function aim(robot, state, target) {
-  const point = targetPoint(target);
-  const delta = sub(point, add(robot.location, { x: 0, y: 96 / 16, z: 0 }));
-  const desired = Math.atan2(-delta.x, delta.z) * 180 / Math.PI;
+  // Aim at the part of the body the reactor can actually see (eyes, chest or legs).
+  const desired = yawTowards(robot, target);
+  const point = visiblePoint(robot.dimension, chestOrigin(robot, desired), target) ?? targetPoint(target);
+  // Pitch from the reactor itself: steep shots at a target by the robot's chest/head.
+  const delta = sub(point, chestOrigin(robot, desired));
   const turn = wrapAngle(desired - state.yaw);
   state.yaw = wrapAngle(state.yaw + Math.max(-CONFIG.turnStep, Math.min(CONFIG.turnStep, turn)));
   state.pitch = state.action === 'stomp' ? 0 : Math.max(-70, Math.min(75,
@@ -113,13 +175,26 @@ export function fireLaser(robot, state) {
   const origin = chestOrigin(robot, state.yaw);
   const direction = unit(sub(state.point, origin));
   const dimension = robot.dimension;
-  let distance = wallDistance(dimension, origin, direction, CONFIG.range, true);
+  let distance = wallDistance(dimension, origin, direction, CONFIG.range, NEAR_ZONE);
   const blocked = distance < CONFIG.range;
-  const hits = dimension.getEntitiesFromRay(origin, direction, {
-    // Blocks are already handled by wallDistance (which skips a leaf touching the chest).
-    maxDistance: distance, ignoreBlockCollision: true,
-    includeLiquidBlocks: false, includePassableBlocks: false, excludeTypes: [ROBOT],
-  }).sort((a, b) => a.distance - b.distance);
+  let hits = [];
+  try {
+    hits = dimension.getEntitiesFromRay(origin, direction, {
+      // Blocks are already handled by wallDistance (which skips blocks touching the chest).
+      maxDistance: Math.max(0.1, distance), ignoreBlockCollision: true,
+      includeLiquidBlocks: false, includePassableBlocks: false, excludeTypes: [ROBOT],
+    });
+  } catch (error) { warn(error); } // Never lose the beam (and the kill) to a failed query.
+  hits = hits.filter(h => h?.entity && h.entity.typeId !== ROBOT);
+  // The engine query can miss a target hugging the robot at chest/head height:
+  // intersect the locked target's box ourselves as well.
+  if (state.target && alive(state.target) && !hits.some(h => h.entity === state.target)) {
+    try {
+      const along = rayBoxDistance(origin, direction, state.target, distance);
+      if (along !== undefined) hits.push({ entity: state.target, distance: along });
+    } catch (error) { warn(error); }
+  }
+  hits.sort((a, b) => a.distance - b.distance);
   // The first living body intercepts the beam. Passive mobs are shields, not targets.
   const hit = hits.find(h => alive(h.entity) && h.distance <= distance);
   if (hit) {
@@ -190,12 +265,11 @@ function recover(robot, state, now) {
   robot.triggerEvent('gc:colossus_resume');
 }
 function chooseTarget(robot, previous) {
-  const origin = sightOrigin(robot);
   const usable = entity => {
     try {
       return isTarget(entity) && entity.dimension.id === robot.dimension.id &&
         length(sub(entity.location, robot.location)) <= CONFIG.range &&
-        visible(robot.dimension, origin, targetPoint(entity), true);
+        visiblePoint(robot.dimension, sightOrigin(robot, entity), entity) !== undefined;
     } catch { return false; }
   };
   // Retain a valid target instead of twitching between nearby players/mobs.
