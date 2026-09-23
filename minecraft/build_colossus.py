@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[1]
 BP = 'addon-source/Goblin_Caravan_BP/'
 RP = 'addon-source/Goblin_Caravan_RP/'
-VERSION = [1, 2, 2]
+VERSION = [1, 2, 3]
 FACES = ['north', 'south', 'east', 'west', 'up', 'down']
 BONES = []
 
@@ -46,7 +46,7 @@ def texture():
     im = Image.new('RGBA', (256, 256), (27, 12, 46, 255))
     d = ImageDraw.Draw(im)
     palette = [(102, 44, 168), (159, 84, 216), (42, 20, 67), (71, 37, 100),
-               (51, 26, 78), (208, 119, 255), (91, 40, 146), (47, 25, 66)]
+               (51, 26, 78), (200, 24, 16), (91, 40, 146), (47, 25, 66)]
     for row in range(8):
         shade = [1.0, .85, .92, .95, 1.12, .7, 1., .9][row]
         for col, color in enumerate(palette):
@@ -72,10 +72,11 @@ def texture():
                     d.rectangle((x+5, y+b, x+26, y+b+2), fill=dark)
                     d.line((x+6, y+b+3, x+25, y+b+3), fill=light)
             elif col == 5:
+                # Glowing RED reactor/lens tile: the chest laser comes from here.
                 for a in range(11):
-                    v = (min(255, 166+a*8), min(220, 75+a*13), 255)
+                    v = (255, min(200, 20+a*16), min(160, 10+a*12))
                     d.rectangle((x+4+a, y+4+a, x+27-a, y+27-a), outline=v)
-                d.line((x+8, y+15, x+23, y+15), fill=(240, 187, 255), width=2)
+                d.line((x+8, y+15, x+23, y+15), fill=(255, 235, 200), width=2)
             elif col == 6:
                 for a in (8, 16, 24):
                     d.line((x+a, y+26, x+a, y+17, x+a-4, y+13, x+a-4, y+6), fill=(171, 80, 235))
@@ -238,7 +239,9 @@ def animations():
     add('laser', 2, {
         'arm_left': {'rotation': {'0.0': [0,0,0], '0.6': [-12,0,-8], '1.0': [-12,0,-8], '1.15': [4,0,-4], '2.0': [0,0,0]}},
         'arm_right': {'rotation': {'0.0': [0,0,0], '0.6': [-12,0,8], '1.0': [-12,0,8], '1.15': [4,0,4], '2.0': [0,0,0]}},
-        'reactor': {'scale': {'0.0': [1,1,1], '0.9': [1.18,1.18,1], '1.0': [1.25,1.25,1], '1.3': [1,1,1]}},
+        # Chest reactor charges for one second, then the red laser leaves it.
+        'reactor': {'scale': {'0.0': [1,1,1], '0.5': [1.2,1.2,1.5], '0.9': [1.45,1.45,2], '1.0': [1.6,1.6,2.4], '1.3': [1,1,1]}},
+        'torso': {'rotation': {'0.0': [0,0,0], '0.9': [-6,0,0], '1.0': [-7,0,0], '1.1': [3,0,0], '1.5': [0,0,0]}},
         'eye_left': {'scale': {'0.0': [1,1,1], '0.9': [1.1,1.15,1], '1.0': [1.2,1.25,1], '1.25': [1,1,1]}},
         'eye_right': {'scale': {'0.0': [1,1,1], '0.9': [1.1,1.15,1], '1.0': [1.2,1.25,1], '1.25': [1,1,1]}},
     }, combat=True)
@@ -261,11 +264,13 @@ def behavior():
                 {'test':'is_game_mode','subject':'other','operator':'!=','value':'creative'},
                 {'test':'is_game_mode','subject':'other','operator':'!=','value':'spectator'},
             ]},
-            *[{'test':'is_family','subject':'other','value':f} for f in ['monster','goblin_caravan','goblin']],
+            *[{'test':'is_family','subject':'other','value':f} for f in ['monster','goblin_caravan','goblin','goblin_giant','goblin_archer']],
         ]},
         {'test':'is_family','subject':'other','operator':'!=','value':'robot_colossus'},
     ]}
     mobile = {'minecraft:movement': {'value':0.22},
+              'minecraft:behavior.melee_box_attack': {'priority':2,'speed_multiplier':1.1,'track_target':True,
+                  'reach_multiplier':1.2,'cooldown_time':1.5},
               'minecraft:behavior.move_towards_target': {'priority':3,'speed_multiplier':1,'within_radius':3},
               'minecraft:behavior.random_stroll': {'priority':6,'speed_multiplier':0.65,'interval':120},
               'minecraft:behavior.look_at_player': {'priority':7,'look_distance':12},
@@ -290,8 +295,12 @@ def behavior():
             'minecraft:can_climb': {}, 'minecraft:nameable': {},
             'minecraft:navigation.walk': {'avoid_water':True,'avoid_damage_blocks':True,'can_path_over_water':False,'can_pass_doors':False,'can_open_doors':False},
             'minecraft:follow_range': {'value':32},
+            # Native fallback: even without scripts it punches players, monsters and goblins.
+            'minecraft:attack': {'damage':20},
+            'minecraft:behavior.hurt_by_target': {'priority':1,
+                'entity_types':[{'filters':{'test':'is_family','subject':'other','operator':'!=','value':'robot_colossus'}}]},
             'minecraft:behavior.float': {'priority':0},
-            'minecraft:behavior.nearest_attackable_target': {'priority':2,'within_radius':28,'must_see':True,
+            'minecraft:behavior.nearest_attackable_target': {'priority':2,'within_radius':28,'must_see':False,
                 'reselect_targets':False,'entity_types':[{'filters':target_filter,'max_dist':28}]},
             'minecraft:loot': {'table':'loot_tables/entities/robot_colossus.json'},
         },
@@ -387,9 +396,9 @@ def particle(name, spark=False):
             'minecraft:particle_lifetime_expression': {'max_lifetime':0.4 if spark else 0.24},
             'minecraft:particle_initial_speed':0.4 if spark else 0,
             'minecraft:particle_motion_dynamic': {'linear_acceleration':[0,0,0]},
-            'minecraft:particle_appearance_billboard': {'size':[0.24 if spark else 0.18]*2,
+            'minecraft:particle_appearance_billboard': {'size':[0.3 if spark else 0.22]*2,
                 'facing_camera_mode':'rotate_xyz','uv': {'texture_width':16,'texture_height':16,'uv':[0,0],'uv_size':[16,16]}},
-            'minecraft:particle_appearance_tinting': {'color':[0.78,0.35,1,1]},
+            'minecraft:particle_appearance_tinting': {'color':[1,0.45,0.1,1] if spark else [1,0.06,0.03,1]},
         }}}
 
 
@@ -473,7 +482,7 @@ def build():
     for y in range(16):
         for x in range(16):
             r = ((x-7.5)**2+(y-7.5)**2)**.5/7.5
-            if r < 1: glow.putpixel((x,y),(240,195,255,int(255*(1-r)**0.7)))
+            if r < 1: glow.putpixel((x,y),(255,255,255,int(255*(1-r)**0.7)))
     buffer = io.BytesIO(); glow.save(buffer,'PNG')
     entries[RP+'textures/particle/colossus_glow.png'] = buffer.getvalue()
     entries[BP+'scripts/colossus.js'] = (ROOT/'minecraft/colossus.js').read_bytes()
@@ -484,7 +493,7 @@ def build():
     for prefix in [BP,RP]:
         manifest = json.loads(entries[prefix+'manifest.json'])
         manifest['header']['version'] = VERSION
-        manifest['header']['description'] = 'Goblin Caravan 1.2.2 — Colosso Robot viola, laser oculari e pestata'
+        manifest['header']['description'] = 'Goblin Caravan 1.2.3 — Colosso Robot viola, laser rosso dal petto e pestata'
         for m in manifest['modules']: m['version'] = VERSION
         for dep in manifest.get('dependencies',[]):
             if 'uuid' in dep: dep['version'] = VERSION
@@ -494,9 +503,22 @@ def build():
         text = '\n'.join(l for l in entries[p].decode().splitlines() if 'gc:robot_colossus' not in l)+'\n'
         entries[p] = (text+f'entity.gc:robot_colossus.name={name}\nitem.spawn_egg.entity.gc:robot_colossus.name={name}\n').encode()
     notes = entries['LEGGIMI.txt'].decode().split('\nCOLOSSO ROBOT — ')[0]
-    for previous in ['1.1.0', '1.2.0', '1.2.1']:
-        notes = notes.replace('GOBLIN CARAVAN — '+previous, 'GOBLIN CARAVAN — 1.2.2')
-    notes += '''\nCOLOSSO ROBOT — 1.2.2
+    for previous in ['1.1.0', '1.2.0', '1.2.1', '1.2.2']:
+        notes = notes.replace('GOBLIN CARAVAN — '+previous, 'GOBLIN CARAVAN — 1.2.3')
+    notes += '''\nCOLOSSO ROBOT — 1.2.3
+NOVITÀ 1.2.3 — LASER ROSSO DAL PETTO
+Il colosso ora ATTACCA davvero mostri, goblin (gigante e arciere) e player in
+Sopravvivenza/Avventura. Il laser è ROSSO, parte dal reattore sul petto (non più
+dagli occhi), dà fuoco al bersaglio per 10 secondi e infligge 200 danni: uccide
+player, zombie e goblin con un colpo (resta solo il Totem dell'immortalità).
+Dove il raggio colpisce accende un fuoco sul terreno. Scie di fiamme lungo il raggio.
+Correzioni: la vista partiva da 7 blocchi d'altezza e sotto alberi/soffitti vedeva
+un muro a 0 blocchi, quindi non trovava mai bersagli. Ora mira dal petto e ignora
+il blocco appena attaccato al corpo. Goblin di altri addon riconosciuti anche dal
+nome ("goblin" nell'ID). Attacco corpo a corpo nativo (20 danni) come riserva se
+gli script non partono, e contrattacco verso chi lo colpisce.
+ATTENZIONE: il fuoco può propagarsi (gamerule doFireTick) — prova lontano da legno.
+''' + '''\nSTORICO 1.2.2
 Nuovo mob gc:robot_colossus; nessuno spawn naturale. Uovo in Creativa oppure:
 /summon gc:robot_colossus ~ ~ ~
 Altezza a riposo esatta: 8 blocchi (128 unità modello), collisione 3,2 × 8.
@@ -506,14 +528,14 @@ bulloni, circuiti, ventole, pistoni, dita, battistrada, reattore e lenti oculari
 Attacca player in Sopravvivenza/Avventura, famiglia monster, goblin_caravan e goblin.
 Esclude altri colossi, Creativa/Spettatore e animali passivi. Goblin di addon esterni
 sono riconosciuti se dichiarano una di queste famiglie, non dal solo nome.
-Laser: raggio 28 blocchi, carica visibile 1 secondo, due raggi viola dalle lenti,
-16 danni base massimi per vittima per scarica (non 16 per occhio), cooldown 3,5 s.
+Laser: raggio 28 blocchi, carica visibile 1 secondo, un raggio ROSSO dal petto,
+200 danni + fuoco per 10 s a ogni vittima colpita, cooldown 3,5 s.
 Si ferma ai blocchi solidi e al primo corpo vivo; non danneggia i passivi.
 La mira si blocca 0,2 s prima dello sparo: si può schivare. Danni una sola volta.
 Pestata: solleva la gamba destra, impatto a 0,8 s, 24 danni base in raggio 4 dal
 piede, respinta, anelli viola e suono; cooldown 2,7 s. Pareti bloccano il danno.
 Richiede suolo, differenza verticale massima 2,5 blocchi; non colpisce volanti alti.
-Laser e pestata hanno recupero e non distruggono blocchi né incendiano il mondo.
+Laser e pestata hanno recupero; non distruggono blocchi. Il laser accende fuoco.
 Animazioni: idle/reattore, camminata IK, caduta, danno, mira, laser e pestata.
 1.2.2: idle sempre attivo sul client, anche senza script di combattimento.
 Camminata basata sullo spostamento X/Z reale, non sui contatori modified_move_speed
@@ -544,11 +566,11 @@ importazione su Bedrock 1.21.90+, orientamento laser a tutte le rotazioni, pesta
 pareti, salvataggio/ricaricamento e più colossi. Il multiplayer può mostrare ritardo
 visivo di rete; le collisioni sono server-side. Suoni vanilla, particelle originali.
 INSTALLAZIONE AGGIORNAMENTO
-Importa Goblin-Caravan.mcaddon 1.2.2 e attiva ENTRAMBI i pacchetti BP e RP
+Importa Goblin-Caravan.mcaddon 1.2.3 e attiva ENTRAMBI i pacchetti BP e RP
 nel mondo. Esci e riapri il mondo dopo avere aggiornato; gli UUID sono invariati
 per sostituire la vecchia versione. Non servono esperimenti o Beta APIs.
 In Creativa il colosso NON attacca il giocatore: genera uno zombie per provarlo.
-Se mancano animazioni controlla che il Resource Pack 1.2.2 sia attivo; se non
+Se mancano animazioni controlla che il Resource Pack 1.2.3 sia attivo; se non
 attacca controlla Behavior Pack, Content Log e versione Bedrock 1.21.90+.
 Per provare usa una zona aperta (almeno 12×12 e 10 blocchi di altezza) e difficoltà
 Normale; genera zombie e goblin, poi passa in Sopravvivenza. Backup del mondo.
@@ -556,9 +578,9 @@ Controlla idle (reattore e avambracci), camminata per più di 10 blocchi, arrest
 caduta, danno, laser a distanza, pestata da vicino, poi salvataggio/ricaricamento.
 Per isolare caricamento RP da condizioni/controller, con trucchi abilitati:
 /playanimation @e[type=gc:robot_colossus,c=1] animation.gc.colossus.stomp
-Se neppure questo muove la gamba, verifica RP 1.2.2, pacchetti duplicati/priorità
+Se neppure questo muove la gamba, verifica RP 1.2.3, pacchetti duplicati/priorità
 ed errori nel Content Log. Se il comando funziona ma il combattimento no, verifica
-BP 1.2.2 e gli errori script. Nessun blocco specifico riprodotto nel motore grafico:
+BP 1.2.3 e gli errori script. Nessun blocco specifico riprodotto nel motore grafico:
 questo aggiornamento è verificato con test automatici, non dentro Minecraft.
 '''
     entries['LEGGIMI.txt'] = entries['addon-source/LEGGIMI.txt'] = notes.encode()
@@ -568,7 +590,7 @@ questo aggiornamento è verificato con test automatici, non dentro Minecraft.
     addon['LEGGIMI.txt'] = notes.encode()
     path.write_bytes(archive(entries))
     (ROOT/'Goblin-Caravan.mcaddon').write_bytes(archive(addon))
-    print(f'Built 1.2.2: {len(BONES)} bones, {sum(len(b["cubes"]) for b in BONES)} cubes, 7 animations, 256px atlas')
+    print(f'Built 1.2.3: {len(BONES)} bones, {sum(len(b["cubes"]) for b in BONES)} cubes, 7 animations, 256px atlas')
 
 
 if __name__ == '__main__':

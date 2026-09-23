@@ -3,7 +3,8 @@ import { world, system, EntityDamageCause, GameMode } from '@minecraft/server';
 // Stable Script API 2.0.0. Timings are shared with the resource-pack animations.
 export const ROBOT = 'gc:robot_colossus';
 export const CONFIG = Object.freeze({
-  range: 28, laserDamage: 16, stompDamage: 24, stompRadius: 4,
+  // laserDamage is deliberately lethal: armour-reduced it still kills a player or a goblin giant.
+  range: 28, laserDamage: 200, burnSeconds: 10, stompDamage: 24, stompRadius: 4,
   laserHitTick: 20, stompHitTick: 16, laserDuration: 40, stompDuration: 32,
   laserCooldown: 70, stompCooldown: 54, turnStep: 30, thinkInterval: 10,
 });
@@ -30,29 +31,44 @@ function alive(entity) {
   try { return !!entity?.isValid && (entity.getComponent('minecraft:health')?.currentValue ?? 0) > 0; }
   catch { return false; } // Handles entities invalidated between query and update.
 }
+const HOSTILE_FAMILIES = ['monster', 'goblin_caravan', 'goblin', 'goblin_giant', 'goblin_archer'];
 export function isTarget(entity) {
-  if (!alive(entity) || entity.typeId === ROBOT) return false;
-  if (entity.typeId === 'minecraft:player') {
-    const mode = entity.getGameMode();
-    return mode !== GameMode.Creative && mode !== GameMode.Spectator;
-  }
-  const families = entity.getComponent('minecraft:type_family');
-  return !!families && ['monster', 'goblin_caravan', 'goblin'].some(f => families.hasTypeFamily(f));
+  try {
+    if (!alive(entity) || entity.typeId === ROBOT) return false;
+    if (entity.typeId === 'minecraft:player') {
+      const mode = entity.getGameMode();
+      return mode !== GameMode.Creative && mode !== GameMode.Spectator;
+    }
+    const families = entity.getComponent('minecraft:type_family');
+    if (families?.hasTypeFamily('robot_colossus')) return false;
+    if (families && HOSTILE_FAMILIES.some(f => families.hasTypeFamily(f))) return true;
+    // Goblins from other add-ons that forgot to declare a family.
+    return /goblin/i.test(entity.typeId);
+  } catch { return false; } // Invalidated between query and update.
 }
 function targetPoint(entity) {
   const head = entity.getHeadLocation();
   return { x: head.x, y: Math.max(entity.location.y + 0.2, head.y - 0.2), z: head.z };
 }
-function wallDistance(dimension, origin, direction, maxDistance) {
+function wallDistance(dimension, origin, direction, maxDistance, skipNear = false) {
   const hit = dimension.getBlockFromRay(origin, direction, {
     maxDistance, includeLiquidBlocks: false, includePassableBlocks: false,
   });
-  return hit ? length(sub(add(hit.block.location, hit.faceLocation), origin)) : maxDistance;
+  if (!hit) return maxDistance;
+  const distance = length(sub(add(hit.block.location, hit.faceLocation), origin));
+  // A ray that STARTS inside a leaf/ceiling block touching the robot's chest
+  // used to report a wall at ~0 blocks: the robot then never saw anybody.
+  if (skipNear && distance < 0.6) {
+    const skip = 0.75;
+    if (maxDistance <= skip) return maxDistance;
+    return skip + wallDistance(dimension, add(origin, scale(direction, skip)), direction, maxDistance - skip, true);
+  }
+  return distance;
 }
-export function visible(dimension, origin, point) {
+export function visible(dimension, origin, point, skipNear = false) {
   const delta = sub(point, origin);
   const distance = length(delta);
-  return distance < 0.1 || wallDistance(dimension, origin, unit(delta), distance) >= distance - 0.05;
+  return distance < 0.1 || wallDistance(dimension, origin, unit(delta), distance, skipNear) >= distance - 0.05;
 }
 function sound(robot, name, pitch = 1) {
   try { robot.dimension.playSound(name, robot.location, { volume: 1.5, pitch }); }
@@ -62,19 +78,26 @@ function particle(dimension, name, position) {
   // Unloaded chunks or optional cosmetics must never interrupt damage or recovery.
   try { dimension.spawnParticle(name, position); } catch (error) { warn(error); }
 }
-export function eyeOrigins(robot, yaw, pitch) {
-  const y = radians(yaw), p = radians(pitch);
+export function chestOrigin(robot, yaw) {
+  const y = radians(yaw);
   const forward = { x: -Math.sin(y), y: 0, z: Math.cos(y) };
-  const side = { x: Math.cos(y), y: 0, z: Math.sin(y) };
-  // Same head pivot and lens centers as robot_colossus.geo.json (16 units/block).
-  const height = 7 + 0.3125 * Math.cos(p) - 0.8125 * Math.sin(p);
-  const depth = 0.3125 * Math.sin(p) + 0.8125 * Math.cos(p);
-  const center = add(robot.location, add(scale(forward, depth), { x: 0, y: height, z: 0 }));
-  return [-0.375, 0.375].map(offset => add(center, scale(side, offset)));
+  // Front face of the reactor bone in robot_colossus.geo.json: y=96, z=-21 (16 units/block).
+  return add(robot.location, add(scale(forward, 21 / 16 + 0.1), { x: 0, y: 96 / 16, z: 0 }));
+}
+function sightOrigin(robot) {
+  return chestOrigin(robot, wrapAngle(robot.getRotation().y));
+}
+function ignite(dimension, position) {
+  // Small fire where the beam lands: only in an empty block that has ground below.
+  try {
+    const block = dimension.getBlock({ x: Math.floor(position.x), y: Math.floor(position.y), z: Math.floor(position.z) });
+    const below = block?.below();
+    if (block?.isAir && below && !below.isAir && !below.isLiquid) block.setType('minecraft:fire');
+  } catch (error) { warn(error); }
 }
 function aim(robot, state, target) {
   const point = targetPoint(target);
-  const delta = sub(point, add(robot.location, { x: 0, y: 7, z: 0 }));
+  const delta = sub(point, add(robot.location, { x: 0, y: 96 / 16, z: 0 }));
   const desired = Math.atan2(-delta.x, delta.z) * 180 / Math.PI;
   const turn = wrapAngle(desired - state.yaw);
   state.yaw = wrapAngle(state.yaw + Math.max(-CONFIG.turnStep, Math.min(CONFIG.turnStep, turn)));
@@ -87,35 +110,44 @@ function aim(robot, state, target) {
   return Math.abs(turn) <= CONFIG.turnStep;
 }
 export function fireLaser(robot, state) {
-  const damaged = new Set();
-  for (const origin of eyeOrigins(robot, state.yaw, state.pitch)) {
-    const direction = unit(sub(state.point, origin));
-    let distance = wallDistance(robot.dimension, origin, direction, CONFIG.range);
-    const hits = robot.dimension.getEntitiesFromRay(origin, direction, {
-      maxDistance: distance, ignoreBlockCollision: false,
-      includeLiquidBlocks: false, includePassableBlocks: false, excludeTypes: [ROBOT],
-    }).sort((a, b) => a.distance - b.distance);
-    // The first living body intercepts the beam. Passive mobs are shields, not targets.
-    const hit = hits.find(h => alive(h.entity) && h.distance <= distance);
-    if (hit) {
-      distance = hit.distance;
-      if (isTarget(hit.entity) && !damaged.has(hit.entity.id)) {
-        damaged.add(hit.entity.id);
-        try {
-          hit.entity.applyDamage(CONFIG.laserDamage, {
-            cause: EntityDamageCause.entityAttack, damagingEntity: robot,
-          });
-        } catch (error) { warn(error); }
-      }
+  const origin = chestOrigin(robot, state.yaw);
+  const direction = unit(sub(state.point, origin));
+  const dimension = robot.dimension;
+  let distance = wallDistance(dimension, origin, direction, CONFIG.range, true);
+  const blocked = distance < CONFIG.range;
+  const hits = dimension.getEntitiesFromRay(origin, direction, {
+    // Blocks are already handled by wallDistance (which skips a leaf touching the chest).
+    maxDistance: distance, ignoreBlockCollision: true,
+    includeLiquidBlocks: false, includePassableBlocks: false, excludeTypes: [ROBOT],
+  }).sort((a, b) => a.distance - b.distance);
+  // The first living body intercepts the beam. Passive mobs are shields, not targets.
+  const hit = hits.find(h => alive(h.entity) && h.distance <= distance);
+  if (hit) {
+    distance = hit.distance;
+    if (isTarget(hit.entity)) {
+      try { hit.entity.setOnFire(CONFIG.burnSeconds, true); } catch (error) { warn(error); }
+      try {
+        hit.entity.applyDamage(CONFIG.laserDamage, {
+          cause: EntityDamageCause.entityAttack, damagingEntity: robot,
+        });
+      } catch (error) { warn(error); }
     }
-    // One short-lived, continuous-looking violet beam from EACH eye; <= 190 points.
-    const count = Math.ceil(distance / 0.3);
-    for (let i = 0; i <= count; i++) {
-      particle(robot.dimension, 'gc:colossus_laser', add(origin, scale(direction, distance * i / Math.max(1, count))));
-    }
-    particle(robot.dimension, 'gc:colossus_spark', add(origin, scale(direction, distance)));
   }
+  // One continuous red beam from the chest reactor, with flames along it; <= 190 points.
+  const end = add(origin, scale(direction, distance));
+  const count = Math.ceil(distance / 0.3);
+  for (let i = 0; i <= count; i++) {
+    const point = add(origin, scale(direction, distance * i / Math.max(1, count)));
+    particle(dimension, 'gc:colossus_laser', point);
+    if (i % 4 === 0) particle(dimension, 'minecraft:basic_flame_particle', point);
+  }
+  particle(dimension, 'gc:colossus_spark', end);
+  particle(dimension, 'minecraft:lava_particle', end);
+  // Fire on the ground/wall where the laser lands (or at the burned victim's feet).
+  if (hit) ignite(dimension, hit.entity.location);
+  else if (blocked) ignite(dimension, sub(end, scale(direction, 0.3)));
   sound(robot, 'mob.guardian.attack', 0.65);
+  sound(robot, 'mob.blaze.shoot', 0.8);
 }
 export function footPosition(robot, yaw) {
   const r = radians(yaw);
@@ -158,12 +190,12 @@ function recover(robot, state, now) {
   robot.triggerEvent('gc:colossus_resume');
 }
 function chooseTarget(robot, previous) {
-  const origin = add(robot.location, { x: 0, y: 7, z: 0 });
+  const origin = sightOrigin(robot);
   const usable = entity => {
     try {
       return isTarget(entity) && entity.dimension.id === robot.dimension.id &&
         length(sub(entity.location, robot.location)) <= CONFIG.range &&
-        visible(robot.dimension, origin, targetPoint(entity));
+        visible(robot.dimension, origin, targetPoint(entity), true);
     } catch { return false; }
   };
   // Retain a valid target instead of twitching between nearby players/mobs.
@@ -228,9 +260,7 @@ export function updateRobot(robot, now) {
     set(robot, 'gc:attack_tick', Math.min(age, 40));
     if (laser && !state.hit) {
       if (age < hitTick - 4) aim(robot, state, state.target);
-      if (age < hitTick && age % 4 === 0) {
-        for (const origin of eyeOrigins(robot, state.yaw, state.pitch)) particle(robot.dimension, 'gc:colossus_spark', origin);
-      }
+      if (age < hitTick && age % 4 === 0) particle(robot.dimension, 'gc:colossus_spark', chestOrigin(robot, state.yaw));
     }
     if (!state.hit && age >= hitTick) {
       state.hit = true; // Mark BEFORE effects: an error cannot duplicate damage next tick.

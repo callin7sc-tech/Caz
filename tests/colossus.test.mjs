@@ -20,11 +20,17 @@ async function fixture() {
       return { block: { location: { x: origin.x+direction.x*this.wall, y: origin.y+direction.y*this.wall, z: origin.z+direction.z*this.wall } }, faceLocation: { x:0,y:0,z:0 } };
     },
     getEntitiesFromRay(origin, direction, options) {
-      assert.equal(options.ignoreBlockCollision, false);
+      assert.equal(options.ignoreBlockCollision, true);
       assert.equal(options.excludeTypes[0], 'gc:robot_colossus');
       return this.rayHits.filter(h => h.distance <= options.maxDistance);
     },
     spawnParticle(name, position) { particles.push({name,position}); },
+    fires: [], air: true,
+    getBlock(pos) {
+      const dim=this;
+      return { isAir: dim.air, isLiquid:false, below: () => ({isAir:false,isLiquid:false}),
+        setType(type) { dim.fires.push({type,pos}); } };
+    },
     playSound(name) { sounds.push(name); },
   };
   let serial = 0;
@@ -45,6 +51,7 @@ async function fixture() {
       triggerEvent(name) { this.events.push(name); },
       applyDamage(amount, options) { this.damage.push({amount,options}); this.hp-=amount; return true; },
       applyKnockback(horizontal, vertical) { this.knockback.push({horizontal,vertical}); },
+      burning: 0, setOnFire(seconds) { this.burning=seconds; return true; },
     };
   }
   const system = { currentTick:0, runInterval(fn,n) { assert.equal(n,2); this.interval=fn; } };
@@ -71,6 +78,8 @@ test('targets players, monsters and both goblin families, not passives or robots
     ['minecraft:player',[],true],['minecraft:zombie',['monster'],true],
     ['gc:archer',['goblin_caravan'],true],['gc:giant',['goblin_caravan'],true],
     ['other:goblin',['goblin'],true],['minecraft:cow',['animal'],false],
+    ['gc:giant',['goblin_giant'],true],['gc:archer',['goblin_archer'],true],
+    ['someaddon:goblin_warrior',[],true],['other:golem',['robot_colossus','monster'],false],
     [f.api.ROBOT,['monster'],false],['minecraft:item',[],false],
   ]) assert.equal(f.api.isTarget(f.entity(type,undefined,families)),wanted,type);
 });
@@ -83,16 +92,39 @@ test('creative and spectator excluded; adventure and survival allowed', async ()
   p.isValid=false; assert.equal(f.api.isTarget(p),false);
   f.target.hp=0; assert.equal(f.api.isTarget(f.target),false);
 });
-test('laser deals one hit across two eyes, with robot attribution', async () => {
+test('red chest laser deals one lethal hit, burns the victim and lights fire', async () => {
   const f=await fixture(); f.api.fireLaser(f.robot,f.shot);
-  assert.equal(f.target.damage.length,1); assert.equal(f.target.damage[0].amount,16);
+  assert.equal(f.target.damage.length,1); assert.equal(f.target.damage[0].amount,200);
+  assert.ok(f.target.damage[0].amount>=600/3, 'kills players, zombies and goblin giants');
   assert.equal(f.target.damage[0].options.damagingEntity,f.robot);
-  assert.equal(f.particles.filter(p=>p.name==='gc:colossus_spark').length,2);
+  assert.equal(f.target.burning,10);
+  assert.equal(f.dimension.fires.length,1); assert.equal(f.dimension.fires[0].type,'minecraft:fire');
+  assert.equal(f.particles.filter(p=>p.name==='gc:colossus_spark').length,1);
+  assert.ok(f.particles.some(p=>p.name==='minecraft:basic_flame_particle'));
+  const first=f.particles.find(p=>p.name==='gc:colossus_laser').position;
+  assert.equal(first.y,96/16); assert.ok(first.z>1.3 && first.z<1.5, 'beam starts at the chest');
+});
+test('laser does not burn passive shields and fire needs an empty block', async () => {
+  const f=await fixture(), cow=f.entity('minecraft:cow',undefined,['animal']);
+  f.dimension.rayHits=[{entity:cow,distance:3}]; f.dimension.air=false;
+  f.api.fireLaser(f.robot,f.shot);
+  assert.equal(cow.burning,0); assert.equal(cow.damage.length,0); assert.equal(f.dimension.fires.length,0);
+});
+test('a leaf block touching the chest does not blind the robot', async () => {
+  const f=await fixture(); f.dimension.wall=.1; f.api.fireLaser(f.robot,f.shot);
+  assert.equal(f.target.damage.length,1);
+  assert.equal(f.api.visible(f.dimension,{x:0,y:6,z:1.4},{x:0,y:1.6,z:12},true),true);
+  assert.equal(f.api.visible(f.dimension,{x:0,y:0.6,z:0},{x:0,y:1.6,z:3}),false, 'stomp walls still block');
+});
+test('fire and burn errors never cancel lethal damage', async () => {
+  const f=await fixture(); f.target.setOnFire=()=>{throw new Error('x');};
+  f.dimension.getBlock=()=>{throw new Error('unloaded');};
+  f.api.fireLaser(f.robot,f.shot); assert.equal(f.target.damage.length,1);
 });
 test('walls stop laser damage and clip all beam particles', async () => {
   const f=await fixture(); f.dimension.wall=3; f.api.fireLaser(f.robot,f.shot);
   assert.equal(f.target.damage.length,0);
-  assert.ok(f.particles.every(p=>p.position.z<4));
+  assert.ok(f.particles.every(p=>p.position.z<5));
 });
 test('passive first body intercepts but takes no damage', async () => {
   const f=await fixture(), cow=f.entity('minecraft:cow',undefined,['animal']);
@@ -109,15 +141,13 @@ test('range and particle budget are bounded', async () => {
   f.api.fireLaser(f.robot,f.shot); assert.equal(f.target.damage.length,0);
   assert.ok(f.particles.length<=192);
 });
-test('eye offsets rotate with yaw and pitch around model head pivot', async () => {
+test('chest origin sits in front of the reactor at every yaw', async () => {
   const f=await fixture();
-  const eyes=f.api.eyeOrigins(f.robot,0,0);
-  assert.equal(eyes[0].y,117/16); assert.equal(eyes[0].z,13/16);
-  assert.equal(eyes[1].x-eyes[0].x,12/16);
-  for (const yaw of [-180,-90,0,90,180]) {
-    const pair=f.api.eyeOrigins(f.robot,yaw,40);
-    assert.ok(Math.abs(Math.hypot(pair[0].x-pair[1].x,pair[0].z-pair[1].z)-.75)<1e-9);
-    assert.ok(pair[0].y<117/16);
+  for (const yaw of [-180,-90,0,45,90,180]) {
+    const o=f.api.chestOrigin(f.robot,yaw);
+    assert.equal(o.y,96/16);
+    assert.ok(Math.abs(Math.hypot(o.x,o.z)-(21/16+.1))<1e-9);
+    const r=yaw*Math.PI/180; assert.ok(Math.abs(o.x+Math.sin(r)*(21/16+.1))<1e-9);
   }
 });
 test('stomp hits ground targets once and uses stable 2.0 knockback signature', async () => {

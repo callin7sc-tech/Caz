@@ -155,8 +155,14 @@ class Assets(unittest.TestCase):
         png=self.z.read('textures/robot_colossus.png')
         self.assertEqual(base64.b64decode(self.bb['textures'][0]['source'].split(',')[1]),png)
         self.assertEqual(Image.open(io.BytesIO(png)).size,(256,256))
-        pixels=Image.open(io.BytesIO(png)).getdata()
-        self.assertTrue(all(b>=r>g for r,g,b,a in pixels))
+        image=Image.open(io.BytesIO(png)).convert('RGBA')
+        # Violet armour everywhere except the red reactor/lens column (x 160-191).
+        for x in range(256):
+            for y in range(256):
+                r,g,b,a=image.getpixel((x,y))
+                if 160<=x<192: self.assertTrue(r>=g and r>=b, (x,y))
+                else: self.assertTrue(b>=r>g, (x,y))
+        r,g,b,a=image.getpixel((164,16)); self.assertGreater(r,200); self.assertLess(b,170)
 
     def test_animations_bones_and_damage_keyframes(self):
         names={b['name'] for b in self.geo['bones']}
@@ -170,16 +176,29 @@ class Assets(unittest.TestCase):
         for b in ['leg_right','shin_right','foot_right']:
             self.assertEqual(stomp['bones'][b]['rotation']['0.8'],[0,0,0])
         self.assertIn('1.0',self.anim['animation.gc.colossus.laser']['bones']['eye_left']['scale'])
+        self.assertGreater(self.anim['animation.gc.colossus.laser']['bones']['reactor']['scale']['1.0'][2],2)
+
+    def test_red_laser_particles_and_native_combat(self):
+        laser=json.loads(self.z.read(RP+'particles/colossus_laser.json'))['particle_effect']['components']
+        r,g,b,_=laser['minecraft:particle_appearance_tinting']['color']
+        self.assertEqual(r,1); self.assertLess(g,.2); self.assertLess(b,.2)
+        c=self.behavior['components']
+        self.assertGreaterEqual(c['minecraft:attack']['damage'],20)
+        self.assertIn('minecraft:behavior.melee_box_attack',self.behavior['component_groups']['gc:mobile'])
+        self.assertIn('minecraft:behavior.hurt_by_target',c)
+        text=json.dumps(c['minecraft:behavior.nearest_attackable_target'])
+        for family in ['monster','goblin_caravan','goblin_giant','goblin_archer','player']: self.assertIn(family,text)
+        self.assertIn('laser rosso',json.loads(self.z.read(BP+'manifest.json'))['header']['description'])
 
     def test_manifest_identity_version_and_script_import(self):
         b=json.loads(self.z.read(BP+'manifest.json')); r=json.loads(self.z.read(RP+'manifest.json'))
         ids=[]
         for m in [b,r]:
-            self.assertEqual(m['header']['version'],[1,2,2]); ids.append(m['header']['uuid'])
+            self.assertEqual(m['header']['version'],[1,2,3]); ids.append(m['header']['uuid'])
             for mod in m['modules']:
-                ids.append(mod['uuid']); self.assertEqual(mod['version'],[1,2,2])
+                ids.append(mod['uuid']); self.assertEqual(mod['version'],[1,2,3])
         self.assertEqual(len(ids),len(set(ids)))
-        self.assertIn({'uuid':r['header']['uuid'],'version':[1,2,2]},b['dependencies'])
+        self.assertIn({'uuid':r['header']['uuid'],'version':[1,2,3]},b['dependencies'])
         self.assertIn({'module_name':'@minecraft/server','version':'2.0.0'},b['dependencies'])
         self.assertEqual(self.z.read(BP+'scripts/colossus.js'),(ROOT/'minecraft/colossus.js').read_bytes())
         self.assertEqual(self.z.read(BP+'scripts/main.js').count(b"import './colossus.js';"),1)
