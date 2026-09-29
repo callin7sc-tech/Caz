@@ -174,14 +174,24 @@ function fill(dimension, from, to, id) {
 }
 const SOFT = new Set(['minecraft:air', B.mossSapling, B.glowSprout, B.fern, B.mushroom]);
 
-/** Trees; also grown by the two saplings in any dimension (only replaces air/plants). */
+/** Trees; also grown by the two saplings in any dimension (only replaces air/plants).
+ * Every tree has its own trunk (log/stem) AND its own crown (leaves/cap). */
 export function growTree(dimension, base, kind, rand = Math.random) {
   const b = floorVec(base);
   const clear = h => { for (let y = 0; y < h; y++) if (!SOFT.has(typeAt(dimension, { x: b.x, y: b.y + y, z: b.z }))) return false; return true; };
+  // The trunk must really be placeable (block registered, inside the world):
+  // otherwise report failure so the sapling is given back instead of vanishing.
+  const trunk = (h, id) => {
+    for (let y = 0; y < h; y++) if (!put(dimension, { x: b.x, y: b.y + y, z: b.z }, id)) {
+      for (let r = 0; r < y; r++) put(dimension, { x: b.x, y: b.y + r, z: b.z }, 'minecraft:air');
+      return false;
+    }
+    return true;
+  };
   if (kind === 'glowcap') {
     const h = 4 + Math.floor(rand() * 3);
     if (!clear(h + 2)) return false;
-    for (let y = 0; y < h; y++) put(dimension, { x: b.x, y: b.y + y, z: b.z }, B.glowStem);
+    if (!trunk(h, B.glowStem)) return false;
     for (let dx = -2; dx <= 2; dx++) for (let dz = -2; dz <= 2; dz++) {
       if (Math.abs(dx) === 2 && Math.abs(dz) === 2) continue;
       put(dimension, { x: b.x + dx, y: b.y + h, z: b.z + dz }, B.glowCap, true);
@@ -193,7 +203,7 @@ export function growTree(dimension, base, kind, rand = Math.random) {
   }
   const h = 5 + Math.floor(rand() * 3);
   if (!clear(h)) return false;
-  for (let y = 0; y < h; y++) put(dimension, { x: b.x, y: b.y + y, z: b.z }, B.mossLog);
+  if (!trunk(h, B.mossLog)) return false;
   for (let dy = -2; dy <= 1; dy++) {
     const r = dy >= 0 ? 1 : 2;
     for (let dx = -r; dx <= r; dx++) for (let dz = -r; dz <= r; dz++) {

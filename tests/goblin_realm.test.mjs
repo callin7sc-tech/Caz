@@ -303,3 +303,30 @@ test('saplings grow new trees with bone meal and consume it in survival', async 
   assert.equal(ow.getBlock({ x: 0, y: 64, z: 0 }).typeId, 'gc:mossbark_log');
   assert.ok([...ow.blocks.values()].some(b => b.id === 'gc:mossbark_leaves'));
 });
+
+test('every grown tree has its own trunk and its own crown (both kinds)', async () => {
+  for (const [sapling, trunk, crown] of [['gc:mossbark_sapling', 'gc:mossbark_log', 'gc:mossbark_leaves'],
+                                          ['gc:glowcap_sprout', 'gc:glowcap_stem', 'gc:glowcap_cap']]) {
+    const { dims, api: R } = await load();
+    const ow = dims['minecraft:overworld'];
+    ow.getBlock({ x: 0, y: 63, z: 0 }).setPermutation({ id: 'gc:goblin_grass' });
+    ow.getBlock({ x: 0, y: 64, z: 0 }).setPermutation({ id: sapling });
+    assert.ok(R.growSapling(ow.getBlock({ x: 0, y: 64, z: 0 }), () => 0.5));
+    let height = 0;
+    while (ow.getBlock({ x: 0, y: 64 + height, z: 0 }).typeId === trunk) height++;
+    assert.ok(height >= 4, sapling + ' trunk height ' + height);
+    const leaves = [...ow.blocks.values()].filter(b => b.id === crown).length;
+    assert.ok(leaves >= 20, sapling + ' crown blocks ' + leaves);
+    assert.equal(ow.getBlock({ x: 0, y: 64 + height, z: 0 }).typeId, crown, 'crown sits on top of the trunk');
+  }
+});
+
+test('a sapling without room stays a sapling instead of vanishing', async () => {
+  const { dims, api: R } = await load();
+  const ow = dims['minecraft:overworld'];
+  ow.getBlock({ x: 0, y: 63, z: 0 }).setPermutation({ id: 'gc:goblin_grass' });
+  ow.getBlock({ x: 0, y: 64, z: 0 }).setPermutation({ id: 'gc:mossbark_sapling' });
+  ow.getBlock({ x: 0, y: 66, z: 0 }).setPermutation({ id: 'minecraft:stone' });
+  assert.equal(R.growSapling(ow.getBlock({ x: 0, y: 64, z: 0 }), () => 0.5), false);
+  assert.equal(ow.getBlock({ x: 0, y: 64, z: 0 }).typeId, 'gc:mossbark_sapling');
+});

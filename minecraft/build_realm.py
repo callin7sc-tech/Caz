@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Goblin Caravan 1.3.0 builder: removes the robot colossus and adds the Goblin Realm.
+"""Goblin Caravan 1.3.1 builder: removes the robot colossus and adds the Goblin Realm.
+
+1.3.1 fixes blocks that Minecraft rejected (missing geometry), recipes without
+unlock data, the invalid rooted_dirt id and the giant float properties.
 
 Run from any directory: python minecraft/build_realm.py (requires Pillow).
 Reads the existing Goblin-Caravan-Blockbench.zip (unchanged goblin assets), drops
@@ -16,7 +19,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 BP = 'addon-source/Goblin_Caravan_BP/'
 RP = 'addon-source/Goblin_Caravan_RP/'
-VERSION = [1, 3, 0]
+VERSION = [1, 3, 1]
 ENGINE = [1, 26, 30]            # stable DimensionRegistry: Bedrock 26.30 / @minecraft/server 2.8.0
 SCRIPT_API = '2.8.0'
 BLOCK_FORMAT = '1.21.90'
@@ -298,15 +301,28 @@ PLANTS = {
     'goblin_fern': ('Felce goblin', 'Goblin Fern', None),
 }
 SOILS = ['gc:goblin_grass', 'gc:goblin_soil', 'minecraft:grass_block', 'minecraft:dirt', 'minecraft:moss_block',
-         'minecraft:podzol', 'minecraft:coarse_dirt', 'minecraft:rooted_dirt', 'minecraft:mycelium']
+         'minecraft:podzol', 'minecraft:coarse_dirt', 'minecraft:dirt_with_roots', 'minecraft:mycelium']
 
 
 def material(faces, render='opaque'):
     return {face: {'texture': 'gc_' + tex, 'render_method': render} for face, tex in faces.items()}
 
 
+FULL_BLOCK = 'minecraft:geometry.full_block'
+# Pillar blocks (logs, stems): the axis follows the clicked face, like vanilla logs.
+PILLARS = {'mossbark_log', 'glowcap_stem'}
+PILLAR_ROTATIONS = [
+    ("q.block_state('minecraft:block_face') == 'north' || q.block_state('minecraft:block_face') == 'south'", [90, 0, 0]),
+    ("q.block_state('minecraft:block_face') == 'east' || q.block_state('minecraft:block_face') == 'west'", [0, 0, 90]),
+]
+
+
 def cube_block(ident, faces, o):
+    # Since format 1.21.90 a block with material_instances MUST also declare a
+    # geometry, otherwise Minecraft rejects the whole block ("Block needs both a
+    # geometry and material instances component") and it never appears in game.
     c = {
+        'minecraft:geometry': FULL_BLOCK,
         'minecraft:destructible_by_mining': {'seconds_to_destroy': o['hardness']},
         'minecraft:destructible_by_explosion': {'explosion_resistance': o['blast']},
         'minecraft:material_instances': material(faces, o.get('render', 'opaque')),
@@ -320,9 +336,13 @@ def cube_block(ident, faces, o):
         c['minecraft:flammable'] = {'catch_chance_modifier': 5, 'destroy_chance_modifier': 20}
     if 'loot' in o:
         c['minecraft:loot'] = f'loot_tables/blocks/gc_{ident}.json'
-    return {'format_version': BLOCK_FORMAT, 'minecraft:block': {
-        'description': {'identifier': 'gc:' + ident, 'menu_category': {'category': o['category']}},
-        'components': c}}
+    description = {'identifier': 'gc:' + ident, 'menu_category': {'category': o['category']}}
+    block = {'description': description, 'components': c}
+    if ident in PILLARS:
+        description['traits'] = {'minecraft:placement_position': {'enabled_states': ['minecraft:block_face']}}
+        block['permutations'] = [{'condition': cond, 'components': {'minecraft:transformation': {'rotation': rot}}}
+                                 for cond, rot in PILLAR_ROTATIONS]
+    return {'format_version': BLOCK_FORMAT, 'minecraft:block': block}
 
 
 def plant_block(ident, component):
@@ -423,15 +443,18 @@ def loot_tables():
 
 
 def recipes():
+    # Recipes with format_version >= 1.20.10 are rejected without "unlock" data.
     def shaped(name, pattern, key, result, count=1):
+        unlock = [{'item': v['item']} for v in key.values()]
         return {'format_version': '1.20.10', 'minecraft:recipe_shaped': {
             'description': {'identifier': 'gc:' + name}, 'tags': ['crafting_table'],
-            'pattern': pattern, 'key': key, 'result': {'item': result, 'count': count}}}
+            'pattern': pattern, 'key': key, 'unlock': unlock, 'result': {'item': result, 'count': count}}}
 
     def shapeless(name, ingredients, result, count=1):
         return {'format_version': '1.20.10', 'minecraft:recipe_shapeless': {
             'description': {'identifier': 'gc:' + name}, 'tags': ['crafting_table'],
-            'ingredients': ingredients, 'result': {'item': result, 'count': count}}}
+            'ingredients': ingredients, 'unlock': [{'item': i['item']} for i in ingredients],
+            'result': {'item': result, 'count': count}}}
     return {
         # The portal block: 9 moss blocks in a 3x3 grid.
         'goblin_moss_bricks': shaped('goblin_moss_bricks', ['###', '###', '###'],
@@ -441,6 +464,9 @@ def recipes():
                                             'minecraft:stick', 4),
         'glowcap_lantern': shaped('glowcap_to_glowstone', ['##', '##'], {'#': {'item': 'gc:glowcap_cap'}},
                                   'minecraft:glowstone'),
+        'mossbark_crafting_table': shaped('mossbark_crafting_table', ['##', '##'], {'#': {'item': 'gc:mossbark_planks'}},
+                                          'minecraft:crafting_table'),
+        'glowcap_stem_to_planks': shapeless('glowcap_stem_to_planks', [{'item': 'gc:glowcap_stem'}], 'gc:mossbark_planks', 2),
     }
 
 
@@ -465,7 +491,24 @@ def particle():
 
 
 NOTES = '''
-REGNO DEI GOBLIN — 1.3.0
+REGNO DEI GOBLIN — 1.3.1
+CORREZIONI 1.3.1
+- Nella 1.3.0 Minecraft scartava 11 blocchi su 16 (mancava la "geometry"): i Mattoni
+  di muschio goblin (quelli del portale!), erba, terra, pietra, minerale, cristallo,
+  tronco, foglie, assi, gambo e cappello di fungoluce non esistevano nel gioco.
+  Ora ci sono tutti.
+- Per questo il germoglio e la spora "crescevano" nel nulla: ora ogni albero ha il suo
+  tronco e le sue foglie (muschiocorteccia) o il suo gambo e cappello (fungoluce).
+  Se l'albero non ha spazio, il germoglio resta dov'è.
+- Tronchi e gambi si orientano come quelli vanilla (in piedi o sdraiati).
+- Le ricette ora compaiono nel banco da lavoro (mancavano i dati di sblocco) e la
+  ricetta dei Mattoni di muschio funziona. Nuove: 4 assi = banco da lavoro,
+  1 gambo di fungoluce = 2 assi.
+- Il Goblin Colosso non dava più errori sulle proprietà dell'equipaggio.
+- Collaudato su Bedrock Dedicated Server 1.26.52 reale: tutti i blocchi caricati,
+  nessun errore nel Content Log, portale 4×5 acceso su entrambi gli assi.
+  Rimuovi la vecchia 1.3.0 prima di importare la 1.3.1.
+
 Il Colosso Robot è stato RIMOSSO (non funzionava). Entità, script, modello,
 texture, animazioni e uova del robot non fanno più parte dell'addon. Se in un
 mondo esisteva già un robot, al caricamento sparisce (entità sconosciuta).
@@ -474,7 +517,7 @@ REQUISITI
 Bedrock 1.26.30 o superiore (aggiornamento "Chaos Cubed", giugno 2026) con Script
 API stabile @minecraft/server 2.8.0: le dimensioni personalizzate sono stabili da
 questa versione. Nessun esperimento o Beta API richiesto. Le versioni precedenti di
-Minecraft non caricano il Behavior Pack 1.3.0.
+Minecraft non caricano il Behavior Pack 1.3.1.
 
 1) MATTONI DI MUSCHIO GOBLIN
 Ricetta nel banco da lavoro: 9 blocchi di muschio (3×3) = 1 Mattoni di muschio goblin.
@@ -530,7 +573,9 @@ COLLAUDO NECESSARIO
 Verificati con test automatici: struttura JSON/ZIP, ricetta, riconoscimento della
 cornice 4×5 su entrambi gli assi e in tutte le posizioni del clic, accensione,
 spegnimento, collegamento dei portali, viaggio e generazione del terreno con API
-simulate. NON eseguito dentro Minecraft: controlla il Content Log al primo avvio.
+simulate, piu' un collaudo su Bedrock Dedicated Server 1.26.52 (blocchi, ricette,
+portale, crescita degli alberi, generazione del Regno). Il viaggio di un giocatore
+vero va provato nel gioco: controlla il Content Log al primo avvio.
 Se il portale non si accende: verifica che la cornice sia completa (10 mattoni),
 l'apertura vuota e che Minecraft sia 1.26.30+. Se il viaggio fallisce, riprova: la
 prima volta la dimensione deve caricare e generare i chunk (qualche secondo).
@@ -557,6 +602,16 @@ def build():
     for name in list(entries):
         if 'colossus' in name or name.endswith('loot_tables/entities/robot_colossus.json'):
             del entries[name]
+    # 1b. Goblin Colossus: float properties need float defaults/ranges, otherwise
+    # Minecraft refuses the actor properties ("default value does not match").
+    giant_path = BP + 'entities/giant.json'
+    giant = json.loads(entries[giant_path])
+    for prop in giant['minecraft:entity']['description'].get('properties', {}).values():
+        if prop.get('type') == 'float':
+            prop['default'] = float(prop.get('default', 0))
+            if 'range' in prop:
+                prop['range'] = [float(v) for v in prop['range']]
+    entries[giant_path] = encoded(giant)
     # 2. Scripts.
     for name in list(entries):
         if name.startswith(BP + 'scripts/'):
@@ -611,7 +666,7 @@ def build():
         manifest = json.loads(entries[prefix + 'manifest.json'])
         manifest['header']['version'] = VERSION
         manifest['header']['min_engine_version'] = ENGINE
-        manifest['header']['description'] = 'Goblin Caravan 1.3.0 — Regno dei Goblin: portale di muschio, nuovi blocchi e alberi'
+        manifest['header']['description'] = 'Goblin Caravan 1.3.1 — Regno dei Goblin: portale di muschio, nuovi blocchi e alberi'
         for m in manifest['modules']:
             m['version'] = VERSION
         for dep in manifest.get('dependencies', []):
@@ -622,8 +677,8 @@ def build():
         entries[prefix + 'manifest.json'] = encoded(manifest)
     # 7. Notes.
     notes = entries['LEGGIMI.txt'].decode().split('\nCOLOSSO ROBOT — ')[0].split('\nREGNO DEI GOBLIN — ')[0]
-    for previous in ['1.1.0', '1.2.0', '1.2.1', '1.2.2', '1.2.3', '1.2.4']:
-        notes = notes.replace('GOBLIN CARAVAN — ' + previous, 'GOBLIN CARAVAN — 1.3.0')
+    for previous in ['1.1.0', '1.2.0', '1.2.1', '1.2.2', '1.2.3', '1.2.4', '1.3.0']:
+        notes = notes.replace('GOBLIN CARAVAN — ' + previous, 'GOBLIN CARAVAN — 1.3.1')
     notes = notes.replace('Bedrock 1.21.90+ con Script API stabile @minecraft/server 2.0.0',
                           'Bedrock 1.26.30+ con Script API stabile @minecraft/server 2.8.0')
     notes = notes.rstrip('\n') + '\n' + NOTES
@@ -634,7 +689,7 @@ def build():
     addon['LEGGIMI.txt'] = notes.encode()
     path.write_bytes(archive(entries))
     (ROOT / 'Goblin-Caravan.mcaddon').write_bytes(archive(addon))
-    print(f'Built 1.3.0: {len(BLOCKS) + len(PLANTS) + 1} blocks, {len(recipes())} recipes, robot colossus removed')
+    print(f'Built 1.3.1: {len(BLOCKS) + len(PLANTS) + 1} blocks, {len(recipes())} recipes, robot colossus removed')
 
 
 if __name__ == '__main__':

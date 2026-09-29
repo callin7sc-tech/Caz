@@ -63,7 +63,7 @@ class RealmAssets(unittest.TestCase):
     def test_manifests_require_stable_custom_dimensions(self):
         bp = json.loads(self.bp['manifest.json'])
         rp = json.loads(self.rp['manifest.json'])
-        self.assertEqual(bp['header']['version'], [1, 3, 0])
+        self.assertEqual(bp['header']['version'], [1, 3, 1])
         self.assertEqual(bp['header']['min_engine_version'], [1, 26, 30])
         api = [d for d in bp['dependencies'] if d.get('module_name') == '@minecraft/server'][0]
         self.assertEqual(api['version'], '2.8.0')
@@ -99,8 +99,11 @@ class RealmAssets(unittest.TestCase):
                 loot = b['components'].get('minecraft:loot')
                 if loot:
                     self.assertIn(loot, self.bp)
+                # Minecraft (format >= 1.21.90) drops a block that has material
+                # instances but no geometry: this is what hid 11 blocks in 1.3.0.
                 geo = b['components'].get('minecraft:geometry')
-                if geo:
+                self.assertTrue(geo, ident + ' has no minecraft:geometry')
+                if geo != 'minecraft:geometry.full_block':
                     self.assertTrue(any(geo.encode() in v for n, v in self.rp.items() if n.startswith('models/blocks/')))
                 for comp in b['components']:
                     if comp.startswith('gc:'):
@@ -112,10 +115,36 @@ class RealmAssets(unittest.TestCase):
                 continue
             self.assertIn(ident, blocks, ident)
         self.assertEqual(len(blocks), 16)
+        for ident in ('gc:mossbark_log', 'gc:glowcap_stem'):
+            traits = blocks[ident]['description']['traits']['minecraft:placement_position']
+            self.assertEqual(traits['enabled_states'], ['minecraft:block_face'])
+            self.assertEqual(len(blocks[ident]['permutations']), 2)
+        # Placement filters only use block ids that exist in Bedrock.
+        for ident in ('gc:mossbark_sapling', 'gc:glowcap_sprout', 'gc:goblin_fern', 'gc:goblin_mushroom'):
+            allowed = blocks[ident]['components']['minecraft:placement_filter']['conditions'][0]['block_filter']
+            self.assertNotIn('minecraft:rooted_dirt', allowed)
+            self.assertIn('minecraft:dirt_with_roots', allowed)
         portal = blocks['gc:goblin_portal']
         self.assertEqual(portal['description']['states'], {'gc:axis': ['x', 'z']})
         self.assertFalse(portal['components']['minecraft:collision_box'])
         self.assertIn('gc:goblin_portal_spark', self.rp['particles/goblin_portal_spark.json'].decode())
+
+    def test_recipes_have_unlock_data(self):
+        # 1.20.10+ recipes without "unlock" are rejected by Minecraft.
+        for name, data in self.bp.items():
+            if name.startswith('recipes/'):
+                recipe = json.loads(data)
+                body = next(v for k, v in recipe.items() if k.startswith('minecraft:recipe_'))
+                self.assertTrue(body.get('unlock'), name)
+
+    def test_giant_float_properties_have_float_defaults(self):
+        giant = json.loads(self.bp['entities/giant.json'])['minecraft:entity']['description']['properties']
+        for name, prop in giant.items():
+            if prop['type'] == 'float':
+                self.assertIsInstance(prop['default'], float, name)
+                self.assertTrue(all(isinstance(v, float) for v in prop['range']), name)
+        # The raw JSON must literally contain a decimal point.
+        self.assertIn(b'"default": 0.0', self.bp['entities/giant.json'])
 
     def test_portal_texture_is_animated(self):
         flip = json.loads(self.rp['textures/flipbook_textures.json'])[0]
